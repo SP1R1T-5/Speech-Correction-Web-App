@@ -1,0 +1,309 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Speech Correction Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-6">
+  <div class="bg-white shadow-xl rounded-2xl p-8 max-w-lg w-full space-y-4">
+    <h2 class="text-2xl font-bold text-center mb-2 text-gray-800">🗣️ Speech Correction Assistant</h2>
+    
+    <!-- Server status indicator -->
+    <div id="serverStatus" class="text-center text-sm"></div>
+    
+    <!-- Optional text override -->
+    <textarea id="editText" 
+              placeholder="(Optional) Type your own phrase here…" 
+              class="w-full h-24 p-2 border rounded-md"></textarea>
+    
+    <div class="flex justify-center gap-4">
+      <button id="recordBtn" class="btn-blue">🎙️ Record</button>
+      <button id="stopBtn"    class="btn-red" disabled>🛑 Stop</button>
+      <button id="sendBtn"    class="btn-green" disabled>📤 Send</button>
+    </div>
+    
+    <p id="status" class="text-center text-gray-600">Status: Idle</p>
+    
+    <!-- Progress bar -->
+    <div id="progressContainer" class="hidden">
+      <div class="w-full bg-gray-200 rounded-full h-2">
+        <div id="progressBar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+      </div>
+      <p class="text-center text-sm text-gray-500 mt-1">Processing audio...</p>
+    </div>
+    
+    <!-- Original audio playback -->
+    <div id="originalAudioContainer" class="bg-gray-100 rounded-xl p-4 flex flex-col items-center hidden">
+      <p class="text-sm font-medium text-gray-700 mb-2">Original Recording</p>
+      <audio id="originalAudio" controls class="w-full"></audio>
+    </div>
+    
+    <!-- Quality metrics display -->
+    <div id="metricsContainer" class="bg-blue-50 rounded-xl p-4 hidden">
+      <h3 class="text-sm font-bold text-blue-800 mb-2">📊 Enhancement Quality Metrics</h3>
+      <div id="metricsContent" class="text-sm text-blue-700"></div>
+    </div>
+    
+    <!-- Enhanced audio playback -->
+    <div class="bg-gray-200 rounded-xl p-4 flex flex-col items-center">
+      <p class="text-sm font-medium text-gray-700 mb-2">Enhanced Audio Playback</p>
+      <audio id="responseAudio" controls class="w-full"></audio>
+    </div>
+    
+    <!-- Download button -->
+    <div id="downloadContainer" class="text-center hidden">
+      <button id="downloadBtn" class="btn-green">📥 Download Enhanced Audio</button>
+    </div>
+  </div>
+
+  <script>
+    let mediaRecorder, audioChunks = [];
+    let enhancedAudioBlob = null;
+    
+    const recordBtn = document.getElementById("recordBtn"),
+          stopBtn = document.getElementById("stopBtn"),
+          sendBtn = document.getElementById("sendBtn"),
+          status = document.getElementById("status"),
+          serverStatus = document.getElementById("serverStatus"),
+          progressContainer = document.getElementById("progressContainer"),
+          progressBar = document.getElementById("progressBar"),
+          originalAudioContainer = document.getElementById("originalAudioContainer"),
+          originalAudio = document.getElementById("originalAudio"),
+          responseAudio = document.getElementById("responseAudio"),
+          downloadContainer = document.getElementById("downloadContainer"),
+          downloadBtn = document.getElementById("downloadBtn"),
+          metricsContainer = document.getElementById("metricsContainer"),
+          metricsContent = document.getElementById("metricsContent");
+
+    // Server configuration
+    const SERVER_URL = 'http://localhost:8000';  // Update this to your server IP/domain
+    
+    // Check server status on load
+    async function checkServerStatus() {
+      try {
+        const response = await fetch(`${SERVER_URL}/health`);
+        if (response.ok) {
+          const data = await response.json();
+          serverStatus.innerHTML = '<span class="text-green-600">✅ Server Online</span>';
+          serverStatus.className = 'text-center text-sm';
+        } else {
+          throw new Error('Server not responding');
+        }
+      } catch (error) {
+        serverStatus.innerHTML = '<span class="text-red-600">❌ Server Offline</span>';
+        serverStatus.className = 'text-center text-sm';
+        console.warn('Server connection failed:', error);
+      }
+    }
+    
+    // Update progress bar
+    function updateProgress(percent) {
+      progressBar.style.width = `${percent}%`;
+    }
+    
+    // Record button handler
+    recordBtn.onclick = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+            ? 'audio/webm;codecs=opus' 
+            : 'audio/webm'
+        });
+        
+        audioChunks = [];
+        
+        mediaRecorder.ondataavailable = e => {
+          if (e.data.size > 0) {
+            audioChunks.push(e.data);
+          }
+        };
+        
+        mediaRecorder.onstop = () => {
+          sendBtn.disabled = false;
+          
+          // Show original audio for playback
+          const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+          originalAudio.src = URL.createObjectURL(blob);
+          originalAudioContainer.classList.remove('hidden');
+          
+          // Stop all tracks to release microphone
+          stream.getTracks().forEach(track => track.stop());
+        };
+        
+        mediaRecorder.start(1000); // Collect data every second
+        status.textContent = "Status: Recording… (Click Stop when finished)";
+        recordBtn.disabled = true;
+        stopBtn.disabled = false;
+        
+        // Hide previous results
+        downloadContainer.classList.add('hidden');
+        responseAudio.src = '';
+        
+      } catch (error) {
+        console.error('Recording failed:', error);
+        status.textContent = "❌ Error: Could not access microphone";
+      }
+    };
+    
+    // Stop button handler
+    stopBtn.onclick = () => {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        status.textContent = "Status: Recording stopped. Click Send to process.";
+        recordBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    };
+    
+    // Send button handler
+    sendBtn.onclick = async () => {
+      if (audioChunks.length === 0) {
+        status.textContent = "❌ Error: No audio recorded";
+        return;
+      }
+      
+      sendBtn.disabled = true;
+      progressContainer.classList.remove('hidden');
+      updateProgress(10);
+      
+      try {
+        status.textContent = "Status: Uploading audio to server...";
+        
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+        const formData = new FormData();
+        formData.append('audio', blob, 'recording.webm');
+        formData.append('text', document.getElementById("editText").value);
+        formData.append('include_metrics', 'true'); // Request quality metrics
+        
+        updateProgress(30);
+        
+        const response = await fetch(`${SERVER_URL}/process`, {
+          method: 'POST',
+          body: formData
+        });
+        
+        updateProgress(60);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Server error (${response.status}): ${errorText}`);
+        }
+        
+        status.textContent = "Status: Processing audio with VoiceFixer...";
+        updateProgress(80);
+        
+        // Check for quality metrics in response headers
+        const pesqScore = response.headers.get('X-PESQ-Score');
+        const stoiScore = response.headers.get('X-STOI-Score');
+        
+        enhancedAudioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(enhancedAudioBlob);
+        responseAudio.src = audioUrl;
+        
+        // Display quality metrics if available
+        if (pesqScore || stoiScore) {
+          let metricsHtml = '<div class="grid grid-cols-2 gap-4">';
+          
+          if (pesqScore) {
+            const pesqFloat = parseFloat(pesqScore);
+            const pesqQuality = pesqFloat > 3.0 ? 'Excellent' : pesqFloat > 2.5 ? 'Good' : pesqFloat > 2.0 ? 'Fair' : 'Poor';
+            metricsHtml += `
+              <div class="bg-white p-2 rounded">
+                <div class="font-bold">PESQ Score</div>
+                <div class="text-lg">${pesqFloat.toFixed(2)}</div>
+                <div class="text-xs text-gray-600">${pesqQuality}</div>
+              </div>
+            `;
+          }
+          
+          if (stoiScore) {
+            const stoiFloat = parseFloat(stoiScore);
+            const stoiQuality = stoiFloat > 0.8 ? 'Excellent' : stoiFloat > 0.7 ? 'Good' : stoiFloat > 0.6 ? 'Fair' : 'Poor';
+            metricsHtml += `
+              <div class="bg-white p-2 rounded">
+                <div class="font-bold">STOI Score</div>
+                <div class="text-lg">${stoiFloat.toFixed(2)}</div>
+                <div class="text-xs text-gray-600">${stoiQuality}</div>
+              </div>
+            `;
+          }
+          
+          metricsHtml += '</div>';
+          metricsHtml += '<div class="mt-2 text-xs text-blue-600">PESQ: 1.0-4.5 (speech quality) | STOI: 0.0-1.0 (intelligibility)</div>';
+          
+          metricsContent.innerHTML = metricsHtml;
+          metricsContainer.classList.remove('hidden');
+        }
+        
+        updateProgress(100);
+        status.textContent = "Status: ✅ Audio enhanced successfully!";
+        
+        // Show download button
+        downloadContainer.classList.remove('hidden');
+        
+      } catch (error) {
+        console.error('Processing failed:', error);
+        status.textContent = `❌ Error: ${error.message}`;
+      } finally {
+        sendBtn.disabled = false;
+        setTimeout(() => {
+          progressContainer.classList.add('hidden');
+          updateProgress(0);
+        }, 2000);
+      }
+    };
+    
+    // Download button handler
+    downloadBtn.onclick = () => {
+      if (enhancedAudioBlob) {
+        const url = URL.createObjectURL(enhancedAudioBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `enhanced_audio_${new Date().getTime()}.wav`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    };
+    
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !recordBtn.disabled && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        recordBtn.click();
+      } else if (e.code === 'Escape' && !stopBtn.disabled) {
+        e.preventDefault();
+        stopBtn.click();
+      } else if (e.code === 'Enter' && e.ctrlKey && !sendBtn.disabled) {
+        e.preventDefault();
+        sendBtn.click();
+      }
+    });
+    
+    // Initialize
+    window.addEventListener('load', checkServerStatus);
+    
+    // Periodic server status check
+    setInterval(checkServerStatus, 30000); // Check every 30 seconds
+
+  </script>
+  
+  <style>
+    .btn-blue  { @apply bg-blue-600 text-white px-4 py-2 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all; }
+    .btn-red   { @apply bg-red-500  text-white px-4 py-2 rounded-xl hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all; }
+    .btn-green { @apply bg-green-600 text-white px-4 py-2 rounded-xl hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all; }
+  </style>
+</body>
+</html>
